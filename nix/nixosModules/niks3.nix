@@ -351,6 +351,30 @@ in
           This helps distribute load when multiple instances are running.
         '';
       };
+
+      mtls = {
+        enable = lib.mkEnableOption "mTLS authentication for niks3 gc";
+
+        clientCert = lib.mkOption {
+          type = lib.types.path;
+          description = ''
+            Path to file containing client certificate for mTLS.
+            Required if server requires mutual TLS authentication.
+            The file should contain only the certificate in PEM format.
+          '';
+          example = "/var/lib/secrets/niks3/client.crt";
+        };
+
+        clientKey = lib.mkOption {
+          type = lib.types.path;
+          description = ''
+            Path to file containing client private key for mTLS.
+            Required if server requires mutual TLS authentication.
+            The file should contain only the private key in PEM format.
+          '';
+          example = "/var/lib/secrets/niks3/client.key";
+        };
+      };
     };
   };
 
@@ -367,6 +391,10 @@ in
       {
         assertion = !(cfg.s3.useIAM && (cfg.s3.accessKeyFile != null || cfg.s3.secretKeyFile != null));
         message = "s3.useIAM cannot be combined with s3.accessKeyFile / s3.secretKeyFile";
+      }
+      {
+        assertion = !cfg.gc.mtls.enable || (cfg.gc.mtls.clientCert != "" && cfg.gc.mtls.clientKey != "");
+        message = "services.niks3.gc.mtls.clientCert and services.niks3.gc.mtls.clientKey must both be set when mtls is enabled";
       }
     ];
 
@@ -487,13 +515,28 @@ in
 
       serviceConfig = {
         Type = "oneshot";
-        ExecStart = ''
-          ${lib.getExe' cfg.package "niks3"} gc \
-            --server-url "http://${cfg.httpAddr}" \
-            --auth-token-path "${cfg.apiTokenFile}" \
-            --older-than "${cfg.gc.olderThan}" \
-            --failed-uploads-older-than "${cfg.gc.failedUploadsOlderThan}"
-        '';
+        ExecStart =
+          let
+            mtlsCfg = cfg.gc.mtls;
+          in
+          lib.concatStringsSep " " (
+            [
+              (lib.getExe' cfg.package "niks3")
+              "gc"
+              "--server-url"
+              (lib.escapeShellArg "http://${cfg.httpAddr}")
+              "--auth-token-path"
+              (lib.escapeShellArg cfg.apiTokenFile)
+              "--older-than"
+              (lib.escapeShellArg cfg.gc.olderThan)
+              "--failed-uploads-older-than"
+              (lib.escapeShellArg cfg.gc.failedUploadsOlderThan)
+            ]
+            ++ lib.optional mtlsCfg.enable "--client-cert"
+            ++ lib.optional mtlsCfg.enable (lib.escapeShellArg mtlsCfg.clientCert)
+            ++ lib.optional mtlsCfg.enable "--client-key"
+            ++ lib.optional mtlsCfg.enable (lib.escapeShellArg mtlsCfg.clientKey)
+          );
         User = cfg.user;
         Group = cfg.group;
 
