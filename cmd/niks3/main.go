@@ -42,6 +42,10 @@ func printPushHelp() {
 	fmt.Fprintln(os.Stderr, "        Maximum concurrent uploads (default: 30)")
 	fmt.Fprintln(os.Stderr, "  --verify-s3-integrity")
 	fmt.Fprintln(os.Stderr, "        Verify that objects in database actually exist in S3 before skipping upload")
+	fmt.Fprintln(os.Stderr, "  --client-cert string")
+	fmt.Fprintln(os.Stderr, "        Path to client certificate file for mTLS")
+	fmt.Fprintln(os.Stderr, "  --client-key string")
+	fmt.Fprintln(os.Stderr, "        Path to client private key file for mTLS")
 	fmt.Fprintln(os.Stderr, "  --debug")
 	fmt.Fprintln(os.Stderr, "        Enable debug logging (includes HTTP requests/responses)")
 	fmt.Fprintln(os.Stderr, "  -h, --help")
@@ -63,6 +67,10 @@ func printGcHelp() {
 	fmt.Fprintln(os.Stderr, "  --force")
 	fmt.Fprintln(os.Stderr, "        Force immediate deletion without grace period")
 	fmt.Fprintln(os.Stderr, "        WARNING: may delete objects still being uploaded")
+	fmt.Fprintln(os.Stderr, "  --client-cert string")
+	fmt.Fprintln(os.Stderr, "        Path to client certificate file for mTLS")
+	fmt.Fprintln(os.Stderr, "  --client-key string")
+	fmt.Fprintln(os.Stderr, "        Path to client private key file for mTLS")
 	fmt.Fprintln(os.Stderr, "  --debug")
 	fmt.Fprintln(os.Stderr, "        Enable debug logging (includes HTTP requests/responses)")
 	fmt.Fprintln(os.Stderr, "  -h, --help")
@@ -95,6 +103,8 @@ func run() error {
 		cf := cmdutil.AddCommonFlags(pushCmd, defaultAuthToken)
 		maxConcurrent := pushCmd.Int("max-concurrent-uploads", 30, "Maximum concurrent uploads")
 		verifyS3Integrity := pushCmd.Bool("verify-s3-integrity", false, "Verify S3 integrity")
+		clientCert := pushCmd.String("client-cert", "", "Path to client certificate file for mTLS")
+		clientKey := pushCmd.String("client-key", "", "Path to client private key file for mTLS")
 
 		if err := pushCmd.Parse(os.Args[2:]); err != nil {
 			if errors.Is(err, flag.ErrHelp) {
@@ -125,7 +135,7 @@ func run() error {
 			return errors.New("at least one store path is required")
 		}
 
-		return pushCommand(*cf.ServerURL, *cf.AuthToken, paths, *maxConcurrent, *verifyS3Integrity, *cf.Debug)
+		return pushCommand(*cf.ServerURL, *cf.AuthToken, paths, *maxConcurrent, *verifyS3Integrity, *clientCert, *clientKey, *cf.Debug)
 
 	case "gc":
 		gcCmd := flag.NewFlagSet("gc", flag.ContinueOnError)
@@ -134,6 +144,8 @@ func run() error {
 		olderThan := gcCmd.String("older-than", "720h", "Delete closures older than this duration")
 		pendingOlderThan := gcCmd.String("failed-uploads-older-than", "6h", "Delete failed uploads older than this duration")
 		force := gcCmd.Bool("force", false, "Force immediate deletion without grace period")
+		clientCert := gcCmd.String("client-cert", "", "Path to client certificate file for mTLS")
+		clientKey := gcCmd.String("client-key", "", "Path to client private key file for mTLS")
 
 		if err := gcCmd.Parse(os.Args[2:]); err != nil {
 			if errors.Is(err, flag.ErrHelp) {
@@ -164,14 +176,14 @@ func run() error {
 			return err
 		}
 
-		return gcCommand(*cf.ServerURL, token, *olderThan, *pendingOlderThan, *force, *cf.Debug)
+		return gcCommand(*cf.ServerURL, token, *olderThan, *pendingOlderThan, *force, *clientCert, *clientKey, *cf.Debug)
 
 	default:
 		return fmt.Errorf("unknown command: %s", os.Args[1])
 	}
 }
 
-func pushCommand(serverURL, authToken string, paths []string, maxConcurrent int, verifyS3Integrity bool, debug bool) error {
+func pushCommand(serverURL, authToken string, paths []string, maxConcurrent int, verifyS3Integrity bool, clientCert, clientKey string, debug bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -187,6 +199,12 @@ func pushCommand(serverURL, authToken string, paths []string, maxConcurrent int,
 	c.MaxConcurrentNARUploads = maxConcurrent
 	c.VerifyS3Integrity = verifyS3Integrity
 
+	if clientCert != "" && clientKey != "" {
+		if err := c.SetClientTLS(clientCert, clientKey); err != nil {
+			return fmt.Errorf("configuring client TLS: %w", err)
+		}
+	}
+
 	if debug {
 		c.SetDebugHTTP(true)
 	}
@@ -198,13 +216,19 @@ func pushCommand(serverURL, authToken string, paths []string, maxConcurrent int,
 	return nil
 }
 
-func gcCommand(serverURL, authToken, olderThan, pendingOlderThan string, force bool, debug bool) error {
+func gcCommand(serverURL, authToken, olderThan, pendingOlderThan string, force bool, clientCert, clientKey string, debug bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	c, err := client.NewClient(ctx, serverURL, authToken)
 	if err != nil {
 		return fmt.Errorf("creating client: %w", err)
+	}
+
+	if clientCert != "" && clientKey != "" {
+		if err := c.SetClientTLS(clientCert, clientKey); err != nil {
+			return fmt.Errorf("configuring client TLS: %w", err)
+		}
 	}
 
 	if debug {
